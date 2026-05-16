@@ -51,9 +51,18 @@ export default function HomeScreen() {
     saveOrders();
   }, [orders]);
 
-  // تحسين دقة القراءة
+  // تحسين دقة القراءة مع معالجة أفضل للأخطاء
   const extractOrderData = (text: string): Order[] => {
+    if (!text || text.trim().length === 0) {
+      throw new Error("الصورة لا تحتوي على نصوص قابلة للقراءة");
+    }
+
     const ids = text.match(/\d{8}/g) || [];
+    
+    if (ids.length === 0) {
+      throw new Error("لم يتم العثور على أرقام طلبات (8 أرقام) في الصورة");
+    }
+
     const today = new Date().toISOString().split("T")[0];
     const lines = text.split("\n");
 
@@ -65,6 +74,7 @@ export default function HomeScreen() {
         text.includes("تم التوصيل") ||
         text.includes("توصيل") ||
         text.includes("delivered") ||
+        text.includes("تم") ||
         relatedLine.includes("تم");
 
       return {
@@ -89,7 +99,22 @@ export default function HomeScreen() {
         const uri = result.assets[0].uri;
 
         try {
+          // إضافة معلومات تشخيصية
+          console.log("بدء قراءة الصورة:", uri);
+          
           const { data: { text } } = await Tesseract.recognize(uri, "ara+eng");
+          
+          console.log("النص المستخرج:", text.substring(0, 100));
+
+          if (!text || text.trim().length === 0) {
+            Alert.alert(
+              "تحذير",
+              "الصورة لا تحتوي على نصوص قابلة للقراءة. تأكد من وضوح الصورة والإضاءة الجيدة."
+            );
+            setLoading(false);
+            return;
+          }
+
           const newOrdersData = extractOrderData(text);
           const existingIds = new Set(orders.map(o => o.id));
 
@@ -99,11 +124,20 @@ export default function HomeScreen() {
             setOrders(prev => [...prev, ...newEntries]);
             Alert.alert("نجح", `تم إضافة ${newEntries.length} طلب جديد`);
           } else {
-            Alert.alert("معلومة", "لم يتم العثور على طلبات جديدة");
+            Alert.alert("معلومة", "جميع الطلبات المكتشفة موجودة بالفعل في السجل");
           }
-        } catch (err) {
+        } catch (err: any) {
           console.error("OCR Error:", err);
-          Alert.alert("خطأ", "حدث خطأ في قراءة الصورة. حاول مرة أخرى.");
+          
+          let errorMessage = "حدث خطأ في قراءة الصورة";
+          
+          if (err.message) {
+            errorMessage = err.message;
+          } else if (err.toString().includes("Network")) {
+            errorMessage = "خطأ في الاتصال. تأكد من وجود اتصال بالإنترنت";
+          }
+          
+          Alert.alert("خطأ", errorMessage + "\n\nجرب صورة أخرى بجودة أعلى وإضاءة أفضل");
         } finally {
           setLoading(false);
         }
