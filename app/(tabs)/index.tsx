@@ -11,7 +11,7 @@ import { ScreenContainer } from "@/components/screen-container";
 interface Order {
   id: string;
   date: string;
-  status: "موصل" | "ملغي";
+  status: "تم التوصيل" | "تم الإلغاء";
   amount: number;
 }
 
@@ -28,7 +28,7 @@ export default function HomeScreen() {
   useEffect(() => {
     const loadOrders = async () => {
       try {
-        const saved = await AsyncStorage.getItem("stc_orders");
+        const saved = await AsyncStorage.getItem("stc_pro_data_v2");
         if (saved) {
           setOrders(JSON.parse(saved));
         }
@@ -43,7 +43,7 @@ export default function HomeScreen() {
   useEffect(() => {
     const saveOrders = async () => {
       try {
-        await AsyncStorage.setItem("stc_orders", JSON.stringify(orders));
+        await AsyncStorage.setItem("stc_pro_data_v2", JSON.stringify(orders));
       } catch (err) {
         console.error("Error saving orders:", err);
       }
@@ -51,36 +51,37 @@ export default function HomeScreen() {
     saveOrders();
   }, [orders]);
 
-  // تحسين دقة القراءة مع معالجة أفضل للأخطاء
+  // تحسين دقة القراءة مع معالجة أفضل للأخطاء وتنظيف النصوص
   const extractOrderData = (text: string): Order[] => {
     if (!text || text.trim().length === 0) {
       throw new Error("الصورة لا تحتوي على نصوص قابلة للقراءة");
     }
 
-    const ids = text.match(/\d{8}/g) || [];
+    // تنظيف النص بإزالة علامات التشكيل
+    const cleanText = text.replace(/[\u064B-\u065F]/g, "");
+    const ids = cleanText.match(/\d{8}/g) || [];
     
     if (ids.length === 0) {
       throw new Error("لم يتم العثور على أرقام طلبات (8 أرقام) في الصورة");
     }
 
     const today = new Date().toISOString().split("T")[0];
-    const lines = text.split("\n");
+    const lines = cleanText.split("\n");
 
     return ids.map(id => {
       // البحث عن السطر الذي يحتوي على الرقم
       const relatedLine = lines.find(l => l.includes(id)) || "";
-      // تحسين كشف حالة التوصيل
+      // تحسين كشف حالة التوصيل بناءً على الكلمات المحددة
       const isDelivered =
-        text.includes("تم التوصيل") ||
-        text.includes("توصيل") ||
-        text.includes("delivered") ||
-        text.includes("تم") ||
-        relatedLine.includes("تم");
+        cleanText.includes("توصيل") ||
+        cleanText.includes("تم التوصيل") ||
+        cleanText.includes("delivered") ||
+        cleanText.includes("تم");
 
       return {
         id,
         date: today,
-        status: isDelivered ? "موصل" : "ملغي",
+        status: isDelivered ? "تم التوصيل" : "تم الإلغاء",
         amount: isDelivered ? COMMISSION : 0,
       };
     });
@@ -99,9 +100,9 @@ export default function HomeScreen() {
         const uri = result.assets[0].uri;
 
         try {
-          // إضافة معلومات تشخيصية
           console.log("بدء قراءة الصورة:", uri);
           
+          // استخدام Tesseract بشكل صريح مع معالجة أفضل
           const { data: { text } } = await Tesseract.recognize(uri, "ara+eng");
           
           console.log("النص المستخرج:", text.substring(0, 100));
@@ -123,7 +124,7 @@ export default function HomeScreen() {
           if (newEntries.length > 0) {
             setOrders(prev => [...prev, ...newEntries]);
             Alert.alert("نجح", `تم إضافة ${newEntries.length} طلب جديد`);
-          } else {
+          } else if (newOrdersData.length > 0) {
             Alert.alert("معلومة", "جميع الطلبات المكتشفة موجودة بالفعل في السجل");
           }
         } catch (err: any) {
@@ -149,7 +150,7 @@ export default function HomeScreen() {
     }
   };
 
-  // تصدير البيانات إلى CSV
+  // تصدير البيانات إلى CSV مع دعم Excel
   const exportToCSV = async () => {
     try {
       const header = "رقم الطلب,الحالة,العمولة,التاريخ\n";
@@ -157,7 +158,8 @@ export default function HomeScreen() {
         .map(o => `${o.id},${o.status},${o.amount},${o.date}`)
         .join("\n");
 
-      const csvData = "\ufeff" + header + csvContent; // BOM for Excel
+      // إضافة BOM لدعم العربية في Excel
+      const csvData = "\ufeff" + header + csvContent;
       const fileName = `تقرير_عمولات_${new Date().toLocaleDateString("ar-SA")}.csv`;
       const filePath = `${FileSystem.documentDirectory}${fileName}`;
 
@@ -189,8 +191,8 @@ export default function HomeScreen() {
 
   // تطبيق الفلترة
   const displayOrders = orders.filter(o => {
-    if (filter === "delivered") return o.status === "موصل";
-    if (filter === "cancelled") return o.status === "ملغي";
+    if (filter === "delivered") return o.status === "تم التوصيل";
+    if (filter === "cancelled") return o.status === "تم الإلغاء";
     return true;
   });
 
@@ -289,7 +291,7 @@ export default function HomeScreen() {
               className="flex-1"
               style={({ pressed }) => [
                 {
-                  backgroundColor: "#4f2d7f",
+                  backgroundColor: loading ? "#aaccff" : "#4f2d7f",
                   borderRadius: 12,
                   paddingVertical: 15,
                   opacity: pressed ? 0.8 : 1,
@@ -303,7 +305,7 @@ export default function HomeScreen() {
                     <Text className="text-white font-bold text-center">جاري...</Text>
                   </>
                 ) : (
-                  <Text className="text-white font-bold text-center">📸 رفع</Text>
+                  <Text className="text-white font-bold text-center">📸 ارفع الآن</Text>
                 )}
               </View>
             </Pressable>
@@ -314,7 +316,7 @@ export default function HomeScreen() {
               className="flex-none px-4"
               style={({ pressed }) => [
                 {
-                  backgroundColor: displayOrders.length === 0 ? "#ccc" : "#00c853",
+                  backgroundColor: displayOrders.length === 0 ? "#ccc" : "#2e7d32",
                   borderRadius: 12,
                   paddingVertical: 15,
                   justifyContent: "center",
@@ -346,10 +348,10 @@ export default function HomeScreen() {
           {/* Recent Orders */}
           <View className="bg-white rounded-3xl p-5">
             <Text className="text-base font-bold text-purple-700 mb-4">
-              📝 السجل ({displayOrders.length})
+              📋 قائمة الطلبات المستخرجة ({displayOrders.length})
             </Text>
             {displayOrders.length === 0 ? (
-              <Text className="text-gray-500 text-center py-4">لا توجد طلبات في هذا التصفية</Text>
+              <Text className="text-gray-500 text-center py-4">ارفع الصور الميدانية لتظهر البيانات هنا تلقائياً</Text>
             ) : (
               displayOrders
                 .slice(-10)
