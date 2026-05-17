@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import {
   ScrollView,
   Text,
@@ -14,6 +14,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as ImagePicker from 'expo-image-picker';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
+import { WebView } from 'react-native-webview';
 
 import { ScreenContainer } from '@/components/screen-container';
 
@@ -26,54 +27,15 @@ interface Order {
 
 type FilterType = 'all' | 'delivered' | 'cancelled';
 
-/**
- * دالة معالجة OCR باستخدام API خارجي موثوق
- * هذا الحل يتجنب مشكلة Web Workers في بيئة React Native
- */
-const processImageWithOCR = async (base64Image: string): Promise<string> => {
-  try {
-    // استخدام API خدمة OCR مجانية وموثوقة
-    const response = await fetch('https://api.ocr.space/parse', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        apikey: 'K87899142372222',
-        base64Image: base64Image,
-        language: 'ara+eng',
-      }),
-    });
-
-    if (!response.ok) {
-      throw new Error('خطأ في الاتصال. تأكد من وجود اتصال بالإنترنت');
-    }
-
-    const data = await response.json();
-
-    if (data.IsErroredOnProcessing) {
-      throw new Error(
-        'الصورة لا تحتوي على نصوص قابلة للقراءة. جرب صورة أخرى بجودة أعلى وإضاءة أفضل'
-      );
-    }
-
-    return data.ParsedText || '';
-  } catch (error: any) {
-    if (error.message.includes('خطأ في الاتصال')) {
-      throw error;
-    }
-    throw new Error(
-      'الصورة لا تحتوي على نصوص قابلة للقراءة. جرب صورة أخرى بجودة أعلى وإضاءة أفضل'
-    );
-  }
-};
-
 export default function HomeScreen() {
   const [orders, setOrders] = useState<Order[]>([]);
   const [loading, setLoading] = useState(false);
   const [filter, setFilter] = useState<FilterType>('all');
   const [goal] = useState(500);
   const COMMISSION = 28;
+  const webViewRef = useRef<WebView>(null);
+  const [pendingBase64, setPendingBase64] = useState<string | null>(null);
+  const [ocrComplete, setOcrComplete] = useState(false);
 
   // Load orders from AsyncStorage on mount
   useEffect(() => {
@@ -151,25 +113,16 @@ export default function HomeScreen() {
   };
 
   /**
-   * معالجة رفع الصورة
+   * معالجة رسالة من WebView
    */
-  const handleFileUpload = async () => {
+  const handleWebViewMessage = (event: any) => {
     try {
-      const result = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ImagePicker.MediaTypeOptions.Images,
-        allowsEditing: false,
-        quality: 1,
-        base64: true,
-      });
+      const message = JSON.parse(event.nativeEvent.data);
 
-      if (!result.canceled && result.assets[0].base64) {
-        setLoading(true);
+      if (message.type === 'success') {
+        const extractedText = message.data;
 
         try {
-          // معالجة الصورة باستخدام OCR API
-          const base64Image = `data:image/jpeg;base64,${result.assets[0].base64}`;
-          const extractedText = await processImageWithOCR(base64Image);
-
           // استخراج بيانات الطلبات
           const newOrders = extractOrderData(extractedText);
 
@@ -192,11 +145,47 @@ export default function HomeScreen() {
         } catch (err: any) {
           Alert.alert('خطأ', err.message || 'حدث خطأ في معالجة الصورة');
         }
+      } else if (message.type === 'error') {
+        Alert.alert('خطأ', message.error || 'حدث خطأ في معالجة الصورة');
+      }
+
+      setLoading(false);
+    } catch (err) {
+      console.error('Error parsing WebView message:', err);
+      Alert.alert('خطأ', 'حدث خطأ في معالجة النتيجة');
+      setLoading(false);
+    }
+  };
+
+  /**
+   * معالجة رفع الصورة
+   */
+  const handleFileUpload = async () => {
+    try {
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        allowsEditing: false,
+        quality: 1,
+        base64: true,
+      });
+
+      if (!result.canceled && result.assets[0].base64) {
+        setLoading(true);
+        setPendingBase64(result.assets[0].base64);
+        setOcrComplete(false);
+
+        // تأخير صغير للسماح لـ WebView بمعالجة الصورة
+        setTimeout(() => {
+          if (webViewRef.current) {
+            webViewRef.current.injectJavaScript(
+              `window.processImage('data:image/jpeg;base64,${result.assets[0].base64}');`
+            );
+          }
+        }, 500);
       }
     } catch (err) {
       console.error('Error picking image:', err);
       Alert.alert('خطأ', 'حدث خطأ في اختيار الصورة');
-    } finally {
       setLoading(false);
     }
   };
@@ -296,78 +285,178 @@ export default function HomeScreen() {
 
   const progress = goal > 0 ? (todayEarnings / goal) * 100 : 0;
 
+  // HTML content for WebView with Tesseract.js
+  const htmlContent = `
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <meta charset="UTF-8">
+      <script src="https://cdn.jsdelivr.net/npm/tesseract.js@v5.0.3/dist/tesseract.min.js"></script>
+      <style>
+        body { margin: 0; padding: 0; }
+      </style>
+    </head>
+    <body>
+      <script>
+        let worker = null;
+
+        async function initWorker() {
+          if (!worker) {
+            worker = await Tesseract.createWorker(['ara', 'eng']);
+          }
+          return worker;
+        }
+
+        window.processImage = async function(base64Data) {
+          try {
+            const w = await initWorker();
+            const result = await w.recognize(base64Data);
+            const text = result.data.text;
+            
+            window.ReactNativeWebView.postMessage(JSON.stringify({
+              type: 'success',
+              data: text
+            }));
+          } catch (error) {
+            window.ReactNativeWebView.postMessage(JSON.stringify({
+              type: 'error',
+              error: error.message || 'خطأ في معالجة الصورة'
+            }));
+          }
+        };
+
+        window.terminateWorker = async function() {
+          if (worker) {
+            await worker.terminate();
+            worker = null;
+          }
+        };
+      </script>
+    </body>
+    </html>
+  `;
+
   return (
     <ScreenContainer className="p-4">
+      {/* Hidden WebView for OCR processing */}
+      {Platform.OS !== 'web' && (
+        <View style={{ width: 0, height: 0, display: 'none' }}>
+          <WebView
+            ref={webViewRef}
+            source={{ html: htmlContent }}
+            onMessage={handleWebViewMessage}
+            javaScriptEnabled={true}
+            scalesPageToFit={false}
+            style={{ width: 0, height: 0 }}
+          />
+        </View>
+      )}
+
       <ScrollView contentContainerStyle={{ flexGrow: 1 }}>
         <View className="gap-4">
-          {/* بطاقة الهدف اليومي */}
-          <View className="bg-primary rounded-2xl p-4">
-            <Text className="text-white text-sm mb-2">هدف اليوم 🎯</Text>
-            <Text className="text-white text-2xl font-bold">
+          {/* Goal Card */}
+          <View className="bg-primary rounded-2xl p-6">
+            <View className="flex-row justify-between items-center mb-3">
+              <Text className="text-white text-sm font-semibold">
+                هدف اليوم
+              </Text>
+              <Text className="text-white text-xs">🎯</Text>
+            </View>
+            <Text className="text-white text-2xl font-bold mb-3">
               {todayEarnings} / {goal} ريال
             </Text>
-            <View className="bg-white/30 rounded-full h-2 mt-3 overflow-hidden">
+            <View className="bg-white/20 rounded-full h-2 overflow-hidden">
               <View
                 className="bg-white h-full"
                 style={{ width: `${Math.min(progress, 100)}%` }}
               />
             </View>
+            <Text className="text-white text-xs mt-2">
+              {Math.round(progress)}% من الهدف
+            </Text>
           </View>
 
-          {/* خيارات الفلترة */}
+          {/* Filter Tabs */}
           <View className="flex-row gap-2">
-            {(['all', 'delivered', 'cancelled'] as const).map((f) => (
-              <TouchableOpacity
-                key={f}
-                onPress={() => setFilter(f)}
-                className={`flex-1 py-2 px-3 rounded-lg ${
-                  filter === f ? 'bg-primary' : 'bg-surface'
+            <TouchableOpacity
+              onPress={() => setFilter('all')}
+              className={`flex-1 py-3 px-4 rounded-lg ${
+                filter === 'all' ? 'bg-primary' : 'bg-surface border border-border'
+              }`}
+            >
+              <Text
+                className={`text-center font-semibold ${
+                  filter === 'all' ? 'text-white' : 'text-foreground'
                 }`}
               >
-                <Text
-                  className={`text-center text-sm font-semibold ${
-                    filter === f ? 'text-white' : 'text-foreground'
-                  }`}
-                >
-                  {f === 'all'
-                    ? 'الكل'
-                    : f === 'delivered'
-                      ? 'موصلة'
-                      : 'ملغاة'}
-                </Text>
-              </TouchableOpacity>
-            ))}
+                الكل
+              </Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              onPress={() => setFilter('delivered')}
+              className={`flex-1 py-3 px-4 rounded-lg ${
+                filter === 'delivered'
+                  ? 'bg-success'
+                  : 'bg-surface border border-border'
+              }`}
+            >
+              <Text
+                className={`text-center font-semibold ${
+                  filter === 'delivered' ? 'text-white' : 'text-foreground'
+                }`}
+              >
+                موصلة
+              </Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              onPress={() => setFilter('cancelled')}
+              className={`flex-1 py-3 px-4 rounded-lg ${
+                filter === 'cancelled'
+                  ? 'bg-error'
+                  : 'bg-surface border border-border'
+              }`}
+            >
+              <Text
+                className={`text-center font-semibold ${
+                  filter === 'cancelled' ? 'text-white' : 'text-foreground'
+                }`}
+              >
+                ملغاة
+              </Text>
+            </TouchableOpacity>
           </View>
 
-          {/* ملخص الأرباح والطلبات */}
+          {/* Stats */}
           <View className="flex-row gap-3">
-            <View className="flex-1 bg-surface rounded-lg p-3">
-              <Text className="text-muted text-xs">الموصلة</Text>
-              <Text className="text-foreground text-lg font-bold">
-                {deliveredCount}
-              </Text>
-            </View>
-            <View className="flex-1 bg-surface rounded-lg p-3">
-              <Text className="text-muted text-xs">إجمالي الأرباح</Text>
-              <Text className="text-foreground text-lg font-bold">
+            <View className="flex-1 bg-surface rounded-xl p-4 border border-border">
+              <Text className="text-muted text-xs mb-1">إجمالي الأرباح</Text>
+              <Text className="text-foreground text-xl font-bold">
                 {totalEarnings} ريس
               </Text>
             </View>
+
+            <View className="flex-1 bg-surface rounded-xl p-4 border border-border">
+              <Text className="text-muted text-xs mb-1">الموصلة</Text>
+              <Text className="text-foreground text-xl font-bold">
+                {deliveredCount}
+              </Text>
+            </View>
           </View>
 
-          {/* الأزرار الرئيسية */}
+          {/* Action Buttons */}
           <View className="flex-row gap-2">
             <TouchableOpacity
               onPress={handleFileUpload}
               disabled={loading}
-              className="flex-1 bg-primary rounded-lg py-3 flex-row items-center justify-center gap-2"
+              className="flex-1 bg-primary py-3 px-4 rounded-lg flex-row items-center justify-center gap-2"
             >
               {loading ? (
                 <ActivityIndicator color="white" />
               ) : (
                 <>
-                  <Text className="text-white text-sm font-semibold">رفع</Text>
-                  <Text className="text-white">📸</Text>
+                  <Text className="text-white font-semibold">رفع 📸</Text>
                 </>
               )}
             </TouchableOpacity>
@@ -375,59 +464,68 @@ export default function HomeScreen() {
             <TouchableOpacity
               onPress={exportToCSV}
               disabled={orders.length === 0}
-              className="flex-1 bg-success rounded-lg py-3 flex-row items-center justify-center gap-2"
+              className="flex-1 bg-success py-3 px-4 rounded-lg flex-row items-center justify-center gap-2"
             >
-              <Text className="text-white text-sm font-semibold">تصدير</Text>
-              <Text className="text-white">📥</Text>
+              <Text className="text-white font-semibold">تصدير 📥</Text>
             </TouchableOpacity>
 
             <TouchableOpacity
               onPress={clearAllOrders}
               disabled={orders.length === 0}
-              className="flex-1 bg-error rounded-lg py-3 flex-row items-center justify-center gap-2"
+              className="flex-1 bg-error py-3 px-4 rounded-lg flex-row items-center justify-center gap-2"
             >
-              <Text className="text-white text-sm font-semibold">مسح</Text>
-              <Text className="text-white">🗑️</Text>
+              <Text className="text-white font-semibold">مسح 🗑️</Text>
             </TouchableOpacity>
           </View>
 
-          {/* قائمة الطلبات */}
+          {/* Orders List */}
           <View>
-            <Text className="text-foreground font-semibold mb-2">
+            <Text className="text-foreground font-semibold mb-3">
               السجل ({displayOrders.length})
             </Text>
+
             {displayOrders.length === 0 ? (
-              <Text className="text-muted text-center py-8">
-                لا توجد طلبات في هذه الفئة
-              </Text>
+              <View className="bg-surface rounded-xl p-8 border border-border items-center">
+                <Text className="text-muted text-center">
+                  لا توجد طلبات في هذه الفئة
+                </Text>
+              </View>
             ) : (
               displayOrders.map((order) => (
                 <View
                   key={order.id}
-                  className="bg-surface rounded-lg p-3 mb-2 flex-row items-center justify-between"
+                  className="bg-surface rounded-xl p-4 mb-3 border border-border flex-row items-center justify-between"
                 >
                   <View className="flex-1">
-                    <Text className="text-foreground font-semibold">
+                    <Text className="text-foreground font-bold">
                       {order.id}
                     </Text>
-                    <View className="flex-row gap-2 mt-1">
-                      <TouchableOpacity
-                        onPress={() => toggleOrderStatus(order.id)}
-                        className={`px-2 py-1 rounded ${
-                          order.status === 'تم التوصيل'
-                            ? 'bg-success'
-                            : 'bg-error'
-                        }`}
-                      >
-                        <Text className="text-white text-xs font-semibold">
-                          {order.status}
-                        </Text>
-                      </TouchableOpacity>
-                      <Text className="text-muted text-xs">
-                        {order.amount} ريال
-                      </Text>
-                    </View>
+                    <Text className="text-muted text-xs">{order.date}</Text>
                   </View>
+
+                  <TouchableOpacity
+                    onPress={() => toggleOrderStatus(order.id)}
+                    className={`px-3 py-1 rounded-full ${
+                      order.status === 'تم التوصيل'
+                        ? 'bg-success/20'
+                        : 'bg-error/20'
+                    }`}
+                  >
+                    <Text
+                      className={`text-xs font-semibold ${
+                        order.status === 'تم التوصيل'
+                          ? 'text-success'
+                          : 'text-error'
+                      }`}
+                    >
+                      {order.status}
+                    </Text>
+                  </TouchableOpacity>
+
+                  <Text className="text-foreground font-bold mx-3">
+                    {order.amount}
+                  </Text>
+
                   <TouchableOpacity
                     onPress={() => deleteOrder(order.id)}
                     className="p-2"
