@@ -1,26 +1,77 @@
-import { ScrollView, Text, View, Pressable, Alert, ActivityIndicator } from "react-native";
-import { useState, useEffect } from "react";
-import AsyncStorage from "@react-native-async-storage/async-storage";
-import * as ImagePicker from "expo-image-picker";
-import * as FileSystem from "expo-file-system/legacy";
-import * as Sharing from "expo-sharing";
-import TextRecognition from "react-native-text-recognition";
+'use client';
 
-import { ScreenContainer } from "@/components/screen-container";
+import { useState, useEffect } from 'react';
+import {
+  ScrollView,
+  Text,
+  View,
+  TouchableOpacity,
+  Alert,
+  ActivityIndicator,
+  Platform,
+} from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as ImagePicker from 'expo-image-picker';
+import * as FileSystem from 'expo-file-system/legacy';
+import * as Sharing from 'expo-sharing';
+
+import { ScreenContainer } from '@/components/screen-container';
 
 interface Order {
   id: string;
   date: string;
-  status: "تم التوصيل" | "تم الإلغاء";
+  status: 'تم التوصيل' | 'تم الإلغاء';
   amount: number;
 }
 
-type FilterType = "all" | "delivered" | "cancelled";
+type FilterType = 'all' | 'delivered' | 'cancelled';
+
+/**
+ * دالة معالجة OCR باستخدام API خارجي موثوق
+ * هذا الحل يتجنب مشكلة Web Workers في بيئة React Native
+ */
+const processImageWithOCR = async (base64Image: string): Promise<string> => {
+  try {
+    // استخدام API خدمة OCR مجانية وموثوقة
+    const response = await fetch('https://api.ocr.space/parse', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        apikey: 'K87899142372222',
+        base64Image: base64Image,
+        language: 'ara+eng',
+      }),
+    });
+
+    if (!response.ok) {
+      throw new Error('خطأ في الاتصال. تأكد من وجود اتصال بالإنترنت');
+    }
+
+    const data = await response.json();
+
+    if (data.IsErroredOnProcessing) {
+      throw new Error(
+        'الصورة لا تحتوي على نصوص قابلة للقراءة. جرب صورة أخرى بجودة أعلى وإضاءة أفضل'
+      );
+    }
+
+    return data.ParsedText || '';
+  } catch (error: any) {
+    if (error.message.includes('خطأ في الاتصال')) {
+      throw error;
+    }
+    throw new Error(
+      'الصورة لا تحتوي على نصوص قابلة للقراءة. جرب صورة أخرى بجودة أعلى وإضاءة أفضل'
+    );
+  }
+};
 
 export default function HomeScreen() {
   const [orders, setOrders] = useState<Order[]>([]);
   const [loading, setLoading] = useState(false);
-  const [filter, setFilter] = useState<FilterType>("all");
+  const [filter, setFilter] = useState<FilterType>('all');
   const [goal] = useState(500);
   const COMMISSION = 28;
 
@@ -28,12 +79,12 @@ export default function HomeScreen() {
   useEffect(() => {
     const loadOrders = async () => {
       try {
-        const saved = await AsyncStorage.getItem("stc_pro_data_v2");
+        const saved = await AsyncStorage.getItem('stc_pro_data_v2');
         if (saved) {
           setOrders(JSON.parse(saved));
         }
       } catch (err) {
-        console.error("Error loading orders:", err);
+        console.error('Error loading orders:', err);
       }
     };
     loadOrders();
@@ -43,9 +94,9 @@ export default function HomeScreen() {
   useEffect(() => {
     const saveOrders = async () => {
       try {
-        await AsyncStorage.setItem("stc_pro_data_v2", JSON.stringify(orders));
+        await AsyncStorage.setItem('stc_pro_data_v2', JSON.stringify(orders));
       } catch (err) {
-        console.error("Error saving orders:", err);
+        console.error('Error saving orders:', err);
       }
     };
     saveOrders();
@@ -58,435 +109,333 @@ export default function HomeScreen() {
   const extractOrderData = (text: string): Order[] => {
     // التحقق من أن النص يحتوي على محتوى
     if (!text || text.trim().length === 0) {
-      throw new Error("الصورة لا تحتوي على نصوص قابلة للقراءة");
+      throw new Error('الصورة لا تحتوي على نصوص قابلة للقراءة');
     }
 
     // تنظيف النص بإزالة علامات التشكيل والحركات العربية
-    const cleanText = text.replace(/[\u064B-\u065F]/g, "");
-    
+    const cleanText = text.replace(/[\u064B-\u065F]/g, '');
+
     // استخراج أرقام الطلبات (8 أرقام)
     const ids = cleanText.match(/\d{8}/g) || [];
-    
+
     if (ids.length === 0) {
-      throw new Error("لم يتم العثور على أرقام طلبات (8 أرقام) في الصورة");
+      throw new Error('لم يتم العثور على أرقام طلبات (8 أرقام) في الصورة');
     }
 
-    const today = new Date().toISOString().split("T")[0];
-    const lines = cleanText.split("\n");
+    const today = new Date().toISOString().split('T')[0];
+    const lines = cleanText.split('\n');
 
     // معالجة كل رقم طلب
-    return ids.map(id => {
+    return ids.map((id) => {
       // البحث عن السطر الفعلي الذي يحتوي على رقم الطلب
-      const relatedLine = lines.find(l => l.includes(id)) || "";
-      
+      const relatedLine = lines.find((l) => l.includes(id)) || '';
+
       /**
        * فحص ذكي بناءً على الكلمات الدلالية في السطر المتعلق برقم الطلب فقط
        * الكلمات المدعومة: توصيل، تم، مكتمل، delivered، completed
        */
       const isDelivered =
-        relatedLine.toLowerCase().includes("توصيل") ||
-        relatedLine.toLowerCase().includes("تم") ||
-        relatedLine.toLowerCase().includes("مكتمل") ||
-        relatedLine.toLowerCase().includes("delivered") ||
-        relatedLine.toLowerCase().includes("completed");
+        relatedLine.toLowerCase().includes('توصيل') ||
+        relatedLine.toLowerCase().includes('تم') ||
+        relatedLine.toLowerCase().includes('مكتمل') ||
+        relatedLine.toLowerCase().includes('delivered') ||
+        relatedLine.toLowerCase().includes('completed');
 
       return {
         id,
         date: today,
-        status: isDelivered ? "تم التوصيل" : "تم الإلغاء",
+        status: isDelivered ? 'تم التوصيل' : 'تم الإلغاء',
         amount: isDelivered ? COMMISSION : 0,
       };
     });
   };
 
   /**
-   * معالجة رفع الصورة وقراءتها باستخدام Native OCR
+   * معالجة رفع الصورة
    */
-  const handleCapture = async () => {
+  const handleFileUpload = async () => {
     try {
       const result = await ImagePicker.launchImageLibraryAsync({
         mediaTypes: ImagePicker.MediaTypeOptions.Images,
         allowsEditing: false,
         quality: 1,
+        base64: true,
       });
 
-      if (!result.canceled && result.assets[0]) {
+      if (!result.canceled && result.assets[0].base64) {
         setLoading(true);
-        const uri = result.assets[0].uri;
 
         try {
-          console.log("بدء قراءة الصورة:", uri);
-          
-          /**
-           * استدعاء Native OCR
-           * تعمل مباشرة مع الصور بدون Web Workers
-           */
-          const recognizedText = await TextRecognition.recognize(uri);
-          
-          console.log("النص المستخرج:", recognizedText.substring(0, 100));
+          // معالجة الصورة باستخدام OCR API
+          const base64Image = `data:image/jpeg;base64,${result.assets[0].base64}`;
+          const extractedText = await processImageWithOCR(base64Image);
 
-          if (!recognizedText || recognizedText.trim().length === 0) {
+          // استخراج بيانات الطلبات
+          const newOrders = extractOrderData(extractedText);
+
+          // استخدام Set لمنع التكرار
+          const existingIds = new Set(orders.map((o) => o.id));
+          const uniqueNew = newOrders.filter((o) => !existingIds.has(o.id));
+
+          if (uniqueNew.length === 0 && newOrders.length > 0) {
             Alert.alert(
-              "تحذير",
-              "الصورة لا تحتوي على نصوص قابلة للقراءة. جرب صورة أخرى بجودة أعلى وإضاءة أفضل."
+              'تنبيه',
+              'جميع الطلبات الموجودة في هذه الصورة مسجلة مسبقاً! 📑'
             );
-            setLoading(false);
-            return;
-          }
-
-          const newOrdersData = extractOrderData(recognizedText);
-          
-          // استخدام Set لمقارنة المعرفات ومنع التكرار
-          const existingIds = new Set(orders.map(o => o.id));
-          const newEntries = newOrdersData.filter(o => !existingIds.has(o.id));
-
-          if (newEntries.length > 0) {
-            setOrders(prev => [...prev, ...newEntries]);
-            Alert.alert("نجح", `تم إضافة ${newEntries.length} طلب جديد`);
-          } else if (newOrdersData.length > 0) {
-            Alert.alert("معلومة", "جميع الطلبات المكتشفة موجودة بالفعل في السجل");
+          } else if (uniqueNew.length > 0) {
+            setOrders((prev) => [...prev, ...uniqueNew]);
+            Alert.alert(
+              'نجاح',
+              `تم إضافة ${uniqueNew.length} طلب جديد بنجاح! ✅`
+            );
           }
         } catch (err: any) {
-          console.error("OCR Error:", err);
-          
-          let errorMessage = "حدث خطأ في قراءة الصورة";
-          
-          if (err.message) {
-            if (err.message.includes("Network") || err.message.includes("network")) {
-              errorMessage = "خطأ في الاتصال. تأكد من وجود اتصال بالإنترنت";
-            } else if (err.message.includes("الصورة لا تحتوي")) {
-              errorMessage = err.message;
-            } else if (err.message.includes("لم يتم العثور")) {
-              errorMessage = err.message;
-            } else if (err.message.includes("Worker")) {
-              errorMessage = "الصورة لا تحتوي على نصوص قابلة للقراءة. جرب صورة أخرى بجودة أعلى وإضاءة أفضل";
-            } else {
-              errorMessage = err.message;
-            }
-          } else if (err.toString().includes("Network")) {
-            errorMessage = "خطأ في الاتصال. تأكد من وجود اتصال بالإنترنت";
-          }
-          
-          // إضافة النصيحة التشخيصية
-          const fullMessage = errorMessage.includes("جودة") 
-            ? errorMessage 
-            : `${errorMessage}. جرب صورة أخرى بجودة أعلى وإضاءة أفضل`;
-          
-          Alert.alert("خطأ", fullMessage);
-        } finally {
-          setLoading(false);
+          Alert.alert('خطأ', err.message || 'حدث خطأ في معالجة الصورة');
         }
       }
     } catch (err) {
-      console.error("Image picker error:", err);
-      Alert.alert("خطأ", "حدث خطأ في اختيار الصورة");
+      console.error('Error picking image:', err);
+      Alert.alert('خطأ', 'حدث خطأ في اختيار الصورة');
+    } finally {
       setLoading(false);
     }
   };
 
   /**
-   * دالة تبديل حالة الطلب (تعديل يدوي سريع)
-   */
-  const toggleOrderStatus = (index: number) => {
-    setOrders(prev => {
-      const updated = [...prev];
-      const order = updated[index];
-      
-      if (order.status === "تم التوصيل") {
-        order.status = "تم الإلغاء";
-        order.amount = 0;
-      } else {
-        order.status = "تم التوصيل";
-        order.amount = COMMISSION;
-      }
-      
-      return updated;
-    });
-  };
-
-  /**
-   * دالة حذف طلب منفرد
-   */
-  const deleteOrder = (index: number) => {
-    Alert.alert("تأكيد", "هل تريد حذف هذا الطلب؟", [
-      { text: "إلغاء", onPress: () => {} },
-      {
-        text: "حذف",
-        onPress: () => {
-          setOrders(prev => prev.filter((_, i) => i !== index));
-        },
-      },
-    ]);
-  };
-
-  /**
-   * تصدير البيانات إلى CSV مع دعم Excel
+   * تصدير البيانات إلى CSV
    */
   const exportToCSV = async () => {
     try {
-      const header = "رقم الطلب,الحالة,العمولة,التاريخ\n";
-      const csvContent = orders
-        .map(o => `${o.id},${o.status},${o.amount},${o.date}`)
-        .join("\n");
+      const headers = 'رقم الطلب,التاريخ,الحالة,المبلغ\n';
+      const rows = orders
+        .map((o) => `${o.id},${o.date},${o.status},${o.amount}`)
+        .join('\n');
 
-      // إضافة BOM لدعم العربية في Excel
-      const csvData = "\ufeff" + header + csvContent;
-      const fileName = `تقرير_عمولات_${new Date().toLocaleDateString("ar-SA")}.csv`;
+      const csv = '\uFEFF' + headers + rows;
+      const fileName = `STC_Orders_${new Date().toISOString().split('T')[0]}.csv`;
       const filePath = `${FileSystem.documentDirectory}${fileName}`;
 
-      await FileSystem.writeAsStringAsync(filePath, csvData, {
+      await FileSystem.writeAsStringAsync(filePath, csv, {
         encoding: FileSystem.EncodingType.UTF8,
       });
 
-      await Sharing.shareAsync(filePath, {
-        mimeType: "text/csv",
-        dialogTitle: "مشاركة التقرير",
-      });
+      await Sharing.shareAsync(filePath);
     } catch (err) {
-      console.error("Export error:", err);
-      Alert.alert("خطأ", "حدث خطأ في تصدير البيانات");
+      console.error('Error exporting CSV:', err);
+      Alert.alert('خطأ', 'حدث خطأ في تصدير البيانات');
     }
   };
 
   /**
-   * حذف جميع الطلبات مع تأكيد
+   * حذف طلب محدد
    */
-  const handleClear = () => {
-    Alert.alert("تأكيد", "هل تريد حذف جميع الطلبات؟", [
-      { text: "إلغاء", onPress: () => {} },
+  const deleteOrder = (id: string) => {
+    Alert.alert('تأكيد', 'هل تريد حذف هذا الطلب؟', [
+      { text: 'إلغاء', style: 'cancel' },
       {
-        text: "حذف",
+        text: 'حذف',
         onPress: () => {
-          setOrders([]);
+          setOrders((prev) => prev.filter((o) => o.id !== id));
         },
+        style: 'destructive',
       },
     ]);
   };
 
   /**
-   * تطبيق الفلترة على البيانات المعروضة
+   * تبديل حالة الطلب
    */
-  const displayOrders = orders.filter(o => {
-    if (filter === "delivered") return o.status === "تم التوصيل";
-    if (filter === "cancelled") return o.status === "تم الإلغاء";
+  const toggleOrderStatus = (id: string) => {
+    setOrders((prev) =>
+      prev.map((o) =>
+        o.id === id
+          ? {
+              ...o,
+              status:
+                o.status === 'تم التوصيل' ? 'تم الإلغاء' : 'تم التوصيل',
+              amount:
+                o.status === 'تم التوصيل' ? 0 : COMMISSION,
+            }
+          : o
+      )
+    );
+  };
+
+  /**
+   * مسح جميع الطلبات
+   */
+  const clearAllOrders = () => {
+    Alert.alert('تأكيد', 'هل تريد مسح جميع الطلبات؟', [
+      { text: 'إلغاء', style: 'cancel' },
+      {
+        text: 'مسح',
+        onPress: () => {
+          setOrders([]);
+        },
+        style: 'destructive',
+      },
+    ]);
+  };
+
+  // حساب الإحصائيات من مصفوفة البيانات الأصلية
+  const todayEarnings = orders
+    .filter((o) => o.date === new Date().toISOString().split('T')[0])
+    .reduce((sum, o) => sum + o.amount, 0);
+
+  const totalEarnings = orders.reduce((sum, o) => sum + o.amount, 0);
+  const deliveredCount = orders.filter(
+    (o) => o.status === 'تم التوصيل'
+  ).length;
+
+  // تطبيق الفلترة
+  const displayOrders = orders.filter((o) => {
+    if (filter === 'delivered') return o.status === 'تم التوصيل';
+    if (filter === 'cancelled') return o.status === 'تم الإلغاء';
     return true;
   });
 
-  /**
-   * حساب المؤشرات المالية من البيانات الأصلية (orders) وليس المفلترة
-   */
-  const todayStr = new Date().toISOString().split("T")[0];
-  const todayEarnings = orders
-    .filter(o => o.date === todayStr)
-    .reduce((sum, o) => sum + o.amount, 0);
-  const totalEarnings = orders.reduce((sum, o) => sum + o.amount, 0);
-  const deliveredCount = orders.filter(o => o.amount > 0).length;
-  const progressPercent = Math.min((todayEarnings / goal) * 100, 100);
+  const progress = goal > 0 ? (todayEarnings / goal) * 100 : 0;
 
   return (
-    <ScreenContainer className="p-4 bg-slate-50">
-      <ScrollView contentContainerStyle={{ flexGrow: 1 }} showsVerticalScrollIndicator={false}>
+    <ScreenContainer className="p-4">
+      <ScrollView contentContainerStyle={{ flexGrow: 1 }}>
         <View className="gap-4">
-          {/* Daily Goal Card */}
-          <View
-            className="rounded-3xl p-5 overflow-hidden"
-            style={{
-              backgroundColor: "#4f2d7f",
-            }}
-          >
-            <View className="flex-row justify-between items-center mb-3">
-              <Text className="text-white text-base">🎯 هدف اليوم</Text>
-              <Text className="text-white font-bold text-lg">
-                {todayEarnings} / {goal} ريال
-              </Text>
-            </View>
-            {/* Progress Bar */}
-            <View
-              className="h-2 rounded-full overflow-hidden"
-              style={{ backgroundColor: "rgba(255,255,255,0.2)" }}
-            >
+          {/* بطاقة الهدف اليومي */}
+          <View className="bg-primary rounded-2xl p-4">
+            <Text className="text-white text-sm mb-2">هدف اليوم 🎯</Text>
+            <Text className="text-white text-2xl font-bold">
+              {todayEarnings} / {goal} ريال
+            </Text>
+            <View className="bg-white/30 rounded-full h-2 mt-3 overflow-hidden">
               <View
-                className="h-full rounded-full"
-                style={{
-                  backgroundColor: "#00e676",
-                  width: `${progressPercent}%`,
-                }}
+                className="bg-white h-full"
+                style={{ width: `${Math.min(progress, 100)}%` }}
               />
             </View>
           </View>
 
-          {/* Filter Section */}
-          <View className="bg-white rounded-2xl p-4 gap-3">
-            <Text className="text-foreground font-semibold text-sm">🔍 الفلترة</Text>
-            <View className="flex-row gap-2">
-              {[
-                { label: "الكل", value: "all" },
-                { label: "موصلة", value: "delivered" },
-                { label: "ملغاة", value: "cancelled" },
-              ].map(option => (
-                <Pressable
-                  key={option.value}
-                  onPress={() => setFilter(option.value as FilterType)}
-                  className="flex-1"
-                  style={({ pressed }) => [
-                    {
-                      backgroundColor: filter === option.value ? "#4f2d7f" : "#f0f0f0",
-                      borderRadius: 8,
-                      paddingVertical: 10,
-                      opacity: pressed ? 0.8 : 1,
-                    },
-                  ]}
-                >
-                  <Text
-                    className={`text-center font-semibold text-sm ${
-                      filter === option.value ? "text-white" : "text-foreground"
-                    }`}
-                  >
-                    {option.label}
-                  </Text>
-                </Pressable>
-              ))}
-            </View>
-          </View>
-
-          {/* Summary Card */}
-          <View className="bg-white rounded-3xl p-5 flex-row justify-around">
-            <View className="items-center">
-              <Text className="text-gray-600 text-xs mb-1">إجمالي الأرباح</Text>
-              <Text className="text-foreground font-bold text-lg">{totalEarnings} ر.س</Text>
-            </View>
-            <View className="w-px bg-gray-200" />
-            <View className="items-center">
-              <Text className="text-gray-600 text-xs mb-1">الموصلة</Text>
-              <Text className="text-foreground font-bold text-lg">{deliveredCount}</Text>
-            </View>
-          </View>
-
-          {/* Action Buttons */}
+          {/* خيارات الفلترة */}
           <View className="flex-row gap-2">
-            <Pressable
-              onPress={handleCapture}
-              disabled={loading}
-              className="flex-1"
-              style={({ pressed }) => [
-                {
-                  backgroundColor: loading ? "#aaccff" : "#4f2d7f",
-                  borderRadius: 12,
-                  paddingVertical: 15,
-                  opacity: pressed ? 0.8 : 1,
-                },
-              ]}
-            >
-              <View className="items-center justify-center flex-row gap-2">
-                {loading ? (
-                  <>
-                    <ActivityIndicator color="white" size="small" />
-                    <Text className="text-white font-bold text-center">جاري...</Text>
-                  </>
-                ) : (
-                  <Text className="text-white font-bold text-center">📸 ارفع الآن</Text>
-                )}
-              </View>
-            </Pressable>
+            {(['all', 'delivered', 'cancelled'] as const).map((f) => (
+              <TouchableOpacity
+                key={f}
+                onPress={() => setFilter(f)}
+                className={`flex-1 py-2 px-3 rounded-lg ${
+                  filter === f ? 'bg-primary' : 'bg-surface'
+                }`}
+              >
+                <Text
+                  className={`text-center text-sm font-semibold ${
+                    filter === f ? 'text-white' : 'text-foreground'
+                  }`}
+                >
+                  {f === 'all'
+                    ? 'الكل'
+                    : f === 'delivered'
+                      ? 'موصلة'
+                      : 'ملغاة'}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
 
-            <Pressable
+          {/* ملخص الأرباح والطلبات */}
+          <View className="flex-row gap-3">
+            <View className="flex-1 bg-surface rounded-lg p-3">
+              <Text className="text-muted text-xs">الموصلة</Text>
+              <Text className="text-foreground text-lg font-bold">
+                {deliveredCount}
+              </Text>
+            </View>
+            <View className="flex-1 bg-surface rounded-lg p-3">
+              <Text className="text-muted text-xs">إجمالي الأرباح</Text>
+              <Text className="text-foreground text-lg font-bold">
+                {totalEarnings} ريس
+              </Text>
+            </View>
+          </View>
+
+          {/* الأزرار الرئيسية */}
+          <View className="flex-row gap-2">
+            <TouchableOpacity
+              onPress={handleFileUpload}
+              disabled={loading}
+              className="flex-1 bg-primary rounded-lg py-3 flex-row items-center justify-center gap-2"
+            >
+              {loading ? (
+                <ActivityIndicator color="white" />
+              ) : (
+                <>
+                  <Text className="text-white text-sm font-semibold">رفع</Text>
+                  <Text className="text-white">📸</Text>
+                </>
+              )}
+            </TouchableOpacity>
+
+            <TouchableOpacity
               onPress={exportToCSV}
               disabled={orders.length === 0}
-              className="flex-none px-4"
-              style={({ pressed }) => [
-                {
-                  backgroundColor: orders.length === 0 ? "#ccc" : "#2e7d32",
-                  borderRadius: 12,
-                  paddingVertical: 15,
-                  justifyContent: "center",
-                  opacity: pressed ? 0.8 : 1,
-                },
-              ]}
+              className="flex-1 bg-success rounded-lg py-3 flex-row items-center justify-center gap-2"
             >
-              <Text className="text-white font-bold text-center">📥</Text>
-            </Pressable>
+              <Text className="text-white text-sm font-semibold">تصدير</Text>
+              <Text className="text-white">📥</Text>
+            </TouchableOpacity>
 
-            <Pressable
-              onPress={handleClear}
+            <TouchableOpacity
+              onPress={clearAllOrders}
               disabled={orders.length === 0}
-              className="flex-none px-4"
-              style={({ pressed }) => [
-                {
-                  borderWidth: 1,
-                  borderColor: orders.length === 0 ? "#ccc" : "#ff5252",
-                  borderRadius: 12,
-                  paddingVertical: 15,
-                  justifyContent: "center",
-                  opacity: pressed ? 0.7 : 1,
-                },
-              ]}
+              className="flex-1 bg-error rounded-lg py-3 flex-row items-center justify-center gap-2"
             >
-              <Text className={`font-bold text-center ${orders.length === 0 ? "text-gray-400" : "text-red-500"}`}>
-                🗑️
-              </Text>
-            </Pressable>
+              <Text className="text-white text-sm font-semibold">مسح</Text>
+              <Text className="text-white">🗑️</Text>
+            </TouchableOpacity>
           </View>
 
-          {/* Recent Orders */}
-          <View className="bg-white rounded-3xl p-5">
-            <Text className="text-base font-bold text-purple-700 mb-4">
-              📋 قائمة الطلبات المستخرجة ({displayOrders.length})
+          {/* قائمة الطلبات */}
+          <View>
+            <Text className="text-foreground font-semibold mb-2">
+              السجل ({displayOrders.length})
             </Text>
             {displayOrders.length === 0 ? (
-              <Text className="text-gray-500 text-center py-4">ارفع الصور الميدانية لتظهر البيانات هنا تلقائياً</Text>
+              <Text className="text-muted text-center py-8">
+                لا توجد طلبات في هذه الفئة
+              </Text>
             ) : (
-              displayOrders
-                .slice(-10)
-                .reverse()
-                .map((order, index) => {
-                  const actualIndex = orders.findIndex(o => o.id === order.id);
-                  return (
-                    <View
-                      key={index}
-                      className="flex-row justify-between items-center py-3 border-b border-gray-200"
-                    >
-                      <View className="flex-1">
-                        <Text className="text-foreground font-semibold">#{order.id}</Text>
-                        <Text className="text-gray-400 text-xs">{order.date}</Text>
-                      </View>
-                      <View className="flex-row items-center gap-2">
-                        <Pressable
-                          onPress={() => toggleOrderStatus(actualIndex)}
-                          style={({ pressed }) => [
-                            {
-                              opacity: pressed ? 0.7 : 1,
-                            },
-                          ]}
-                        >
-                          <View className="items-end">
-                            <Text
-                              className={`font-semibold px-3 py-1 rounded-lg ${
-                                order.amount > 0 
-                                  ? "text-green-600 bg-green-50" 
-                                  : "text-red-600 bg-red-50"
-                              }`}
-                            >
-                              {order.status}
-                            </Text>
-                            <Text className="text-gray-600 text-xs mt-1">{order.amount} ر.س</Text>
-                          </View>
-                        </Pressable>
-                        
-                        <Pressable
-                          onPress={() => deleteOrder(actualIndex)}
-                          style={({ pressed }) => [
-                            {
-                              opacity: pressed ? 0.6 : 0.8,
-                              paddingLeft: 8,
-                            },
-                          ]}
-                        >
-                          <Text className="text-lg">🗑️</Text>
-                        </Pressable>
-                      </View>
+              displayOrders.map((order) => (
+                <View
+                  key={order.id}
+                  className="bg-surface rounded-lg p-3 mb-2 flex-row items-center justify-between"
+                >
+                  <View className="flex-1">
+                    <Text className="text-foreground font-semibold">
+                      {order.id}
+                    </Text>
+                    <View className="flex-row gap-2 mt-1">
+                      <TouchableOpacity
+                        onPress={() => toggleOrderStatus(order.id)}
+                        className={`px-2 py-1 rounded ${
+                          order.status === 'تم التوصيل'
+                            ? 'bg-success'
+                            : 'bg-error'
+                        }`}
+                      >
+                        <Text className="text-white text-xs font-semibold">
+                          {order.status}
+                        </Text>
+                      </TouchableOpacity>
+                      <Text className="text-muted text-xs">
+                        {order.amount} ريال
+                      </Text>
                     </View>
-                  );
-                })
+                  </View>
+                  <TouchableOpacity
+                    onPress={() => deleteOrder(order.id)}
+                    className="p-2"
+                  >
+                    <Text className="text-error text-lg">🗑️</Text>
+                  </TouchableOpacity>
+                </View>
+              ))
             )}
           </View>
         </View>
