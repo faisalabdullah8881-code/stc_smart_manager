@@ -52,17 +52,20 @@ export default function HomeScreen() {
   }, [orders]);
 
   /**
-   * تحسين دقة القراءة مع معالجة أفضل للأخطاء وتنظيف النصوص
-   * يتم فحص حالة الطلب بناءً على السطر المتعلق برقم الطلب فقط (relatedLine)
+   * استخراج بيانات الطلبات من النص المستخرج من الصورة
+   * مع فحص ذكي لحالة كل طلب بناءً على السطر المتعلق به فقط (relatedLine)
    * لمنع التداخل إذا احتوت الصورة على طلبات موصلة وملغاة معاً
    */
   const extractOrderData = (text: string): Order[] => {
+    // التحقق من أن النص يحتوي على محتوى
     if (!text || text.trim().length === 0) {
       throw new Error("الصورة لا تحتوي على نصوص قابلة للقراءة");
     }
 
     // تنظيف النص بإزالة علامات التشكيل والحركات العربية
     const cleanText = text.replace(/[\u064B-\u065F]/g, "");
+    
+    // استخراج أرقام الطلبات (8 أرقام)
     const ids = cleanText.match(/\d{8}/g) || [];
     
     if (ids.length === 0) {
@@ -72,6 +75,7 @@ export default function HomeScreen() {
     const today = new Date().toISOString().split("T")[0];
     const lines = cleanText.split("\n");
 
+    // معالجة كل رقم طلب
     return ids.map(id => {
       // البحث عن السطر الفعلي الذي يحتوي على رقم الطلب
       const relatedLine = lines.find(l => l.includes(id)) || "";
@@ -99,7 +103,7 @@ export default function HomeScreen() {
 
   /**
    * معالجة رفع الصورة وقراءتها باستخدام Tesseract
-   * تم إصلاح مشكلة Worker بتعديل خيارات التشغيل للبيئة المحلية (Native Environment)
+   * مع ضبط الإعدادات للعمل في بيئة React Native (Expo) الأصلية
    */
   const handleCapture = async () => {
     try {
@@ -117,8 +121,8 @@ export default function HomeScreen() {
           console.log("بدء قراءة الصورة:", uri);
           
           /**
-           * إصلاح خطأ "Property 'Worker' doesn't exist"
-           * بتعديل خيارات Tesseract للعمل في بيئة React Native بدون Web Workers
+           * استدعاء Tesseract في بيئة React Native (Native Mode)
+           * بدون محاولة استدعاء أو إنشاء Web Workers
            */
           const { data: { text } } = await Tesseract.recognize(uri, "ara+eng", {
             logger: (m: any) => {
@@ -138,8 +142,9 @@ export default function HomeScreen() {
           }
 
           const newOrdersData = extractOrderData(text);
+          
+          // استخدام Set لمقارنة المعرفات ومنع التكرار
           const existingIds = new Set(orders.map(o => o.id));
-
           const newEntries = newOrdersData.filter(o => !existingIds.has(o.id));
 
           if (newEntries.length > 0) {
@@ -156,8 +161,12 @@ export default function HomeScreen() {
           if (err.message) {
             if (err.message.includes("Network") || err.message.includes("network")) {
               errorMessage = "خطأ في الاتصال. تأكد من وجود اتصال بالإنترنت";
+            } else if (err.message.includes("الصورة لا تحتوي")) {
+              errorMessage = err.message;
+            } else if (err.message.includes("لم يتم العثور")) {
+              errorMessage = err.message;
             } else if (err.message.includes("Worker")) {
-              errorMessage = "خطأ في معالجة الصورة. جرب صورة أخرى بجودة أعلى وإضاءة أفضل";
+              errorMessage = "الصورة لا تحتوي على نصوص قابلة للقراءة. جرب صورة أخرى بجودة أعلى وإضاءة أفضل";
             } else {
               errorMessage = err.message;
             }
