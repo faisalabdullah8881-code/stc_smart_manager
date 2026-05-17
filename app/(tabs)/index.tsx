@@ -4,7 +4,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as ImagePicker from "expo-image-picker";
 import * as FileSystem from "expo-file-system/legacy";
 import * as Sharing from "expo-sharing";
-import Tesseract from "tesseract.js";
+import TextRecognition from "react-native-text-recognition";
 
 import { ScreenContainer } from "@/components/screen-container";
 
@@ -54,7 +54,6 @@ export default function HomeScreen() {
   /**
    * استخراج بيانات الطلبات من النص المستخرج من الصورة
    * مع فحص ذكي لحالة كل طلب بناءً على السطر المتعلق به فقط (relatedLine)
-   * لمنع التداخل إذا احتوت الصورة على طلبات موصلة وملغاة معاً
    */
   const extractOrderData = (text: string): Order[] => {
     // التحقق من أن النص يحتوي على محتوى
@@ -83,7 +82,6 @@ export default function HomeScreen() {
       /**
        * فحص ذكي بناءً على الكلمات الدلالية في السطر المتعلق برقم الطلب فقط
        * الكلمات المدعومة: توصيل، تم، مكتمل، delivered، completed
-       * هذا يضمن عدم تعميم حالة واحدة على جميع الطلبات
        */
       const isDelivered =
         relatedLine.toLowerCase().includes("توصيل") ||
@@ -102,8 +100,7 @@ export default function HomeScreen() {
   };
 
   /**
-   * معالجة رفع الصورة وقراءتها باستخدام Tesseract
-   * مع ضبط الإعدادات للعمل في بيئة React Native (Expo) الأصلية
+   * معالجة رفع الصورة وقراءتها باستخدام Native OCR
    */
   const handleCapture = async () => {
     try {
@@ -121,18 +118,14 @@ export default function HomeScreen() {
           console.log("بدء قراءة الصورة:", uri);
           
           /**
-           * استدعاء Tesseract في بيئة React Native (Native Mode)
-           * بدون محاولة استدعاء أو إنشاء Web Workers
+           * استدعاء Native OCR
+           * تعمل مباشرة مع الصور بدون Web Workers
            */
-          const { data: { text } } = await Tesseract.recognize(uri, "ara+eng", {
-            logger: (m: any) => {
-              console.log("OCR Progress:", m);
-            },
-          });
+          const recognizedText = await TextRecognition.recognize(uri);
           
-          console.log("النص المستخرج:", text.substring(0, 100));
+          console.log("النص المستخرج:", recognizedText.substring(0, 100));
 
-          if (!text || text.trim().length === 0) {
+          if (!recognizedText || recognizedText.trim().length === 0) {
             Alert.alert(
               "تحذير",
               "الصورة لا تحتوي على نصوص قابلة للقراءة. جرب صورة أخرى بجودة أعلى وإضاءة أفضل."
@@ -141,7 +134,7 @@ export default function HomeScreen() {
             return;
           }
 
-          const newOrdersData = extractOrderData(text);
+          const newOrdersData = extractOrderData(recognizedText);
           
           // استخدام Set لمقارنة المعرفات ومنع التكرار
           const existingIds = new Set(orders.map(o => o.id));
@@ -174,7 +167,12 @@ export default function HomeScreen() {
             errorMessage = "خطأ في الاتصال. تأكد من وجود اتصال بالإنترنت";
           }
           
-          Alert.alert("خطأ", errorMessage);
+          // إضافة النصيحة التشخيصية
+          const fullMessage = errorMessage.includes("جودة") 
+            ? errorMessage 
+            : `${errorMessage}. جرب صورة أخرى بجودة أعلى وإضاءة أفضل`;
+          
+          Alert.alert("خطأ", fullMessage);
         } finally {
           setLoading(false);
         }
@@ -188,7 +186,6 @@ export default function HomeScreen() {
 
   /**
    * دالة تبديل حالة الطلب (تعديل يدوي سريع)
-   * النقر على الحالة يبدلها وتحديث العمولة تلقائياً
    */
   const toggleOrderStatus = (index: number) => {
     setOrders(prev => {
@@ -209,7 +206,6 @@ export default function HomeScreen() {
 
   /**
    * دالة حذف طلب منفرد
-   * حذف آمن مع تأكيد من المستخدم
    */
   const deleteOrder = (index: number) => {
     Alert.alert("تأكيد", "هل تريد حذف هذا الطلب؟", [
@@ -225,7 +221,6 @@ export default function HomeScreen() {
 
   /**
    * تصدير البيانات إلى CSV مع دعم Excel
-   * يتضمن UTF-8 BOM لضمان عدم تشوه الكلمات العربية
    */
   const exportToCSV = async () => {
     try {
@@ -279,7 +274,6 @@ export default function HomeScreen() {
 
   /**
    * حساب المؤشرات المالية من البيانات الأصلية (orders) وليس المفلترة
-   * هذا يضمن ثبات الحسابات المالية عند تغيير تبويبات الفرز
    */
   const todayStr = new Date().toISOString().split("T")[0];
   const todayEarnings = orders
@@ -355,7 +349,7 @@ export default function HomeScreen() {
             </View>
           </View>
 
-          {/* Summary Card - يعرض البيانات من orders الأصلية */}
+          {/* Summary Card */}
           <View className="bg-white rounded-3xl p-5 flex-row justify-around">
             <View className="items-center">
               <Text className="text-gray-600 text-xs mb-1">إجمالي الأرباح</Text>
@@ -368,7 +362,7 @@ export default function HomeScreen() {
             </View>
           </View>
 
-          {/* Action Buttons - متناسق على الأجهزة المحمولة والتابلت */}
+          {/* Action Buttons */}
           <View className="flex-row gap-2">
             <Pressable
               onPress={handleCapture}
