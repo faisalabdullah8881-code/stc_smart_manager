@@ -66,7 +66,8 @@ export default function HomeScreen() {
 
   /**
    * استخراج بيانات الطلبات من النص المستخرج من الصورة
-   * مع فحص ذكي لحالة كل طلب بناءً على السطر المتعلق به فقط (relatedLine)
+   * مع فحص ذكي وتكيفي لحالة كل طلب بناءً على السطر المتعلق به أولاً،
+   * ثم الرجوع للنص الكامل كخطة احتياطية إذا كان السطر غامضاً
    */
   const extractOrderData = (text: string): Order[] => {
     // التحقق من أن النص يحتوي على محتوى
@@ -86,22 +87,33 @@ export default function HomeScreen() {
 
     const today = new Date().toISOString().split('T')[0];
     const lines = cleanText.split('\n');
+    const lowerFullText = cleanText.toLowerCase();
 
     // معالجة كل رقم طلب
     return ids.map((id) => {
       // البحث عن السطر الفعلي الذي يحتوي على رقم الطلب
       const relatedLine = lines.find((l) => l.includes(id)) || '';
+      const lowerLine = relatedLine.toLowerCase();
 
       /**
-       * فحص ذكي بناءً على الكلمات الدلالية في السطر المتعلق برقم الطلب فقط
-       * الكلمات المدعومة: توصيل، تم، مكتمل، delivered، completed
+       * فحص ذكي وتكيفي بناءً على الكلمات الدلالية:
+       * 1. أولاً: فحص السطر المتعلق برقم الطلب (relatedLine)
+       * 2. احتياطياً: فحص النص الكامل (cleanText) إذا كان السطر غامضاً
+       * 
+       * الكلمات المدعومة:
+       * - العربية: توصيل، تم، مكتمل، تم التوصيل، توصيل ناجح
+       * - الإنجليزية: delivered، completed
        */
       const isDelivered =
-        relatedLine.toLowerCase().includes('توصيل') ||
-        relatedLine.toLowerCase().includes('تم') ||
-        relatedLine.toLowerCase().includes('مكتمل') ||
-        relatedLine.toLowerCase().includes('delivered') ||
-        relatedLine.toLowerCase().includes('completed');
+        // فحص السطر المتعلق برقم الطلب
+        lowerLine.includes('توصيل') ||
+        lowerLine.includes('تم') ||
+        lowerLine.includes('مكتمل') ||
+        lowerLine.includes('delivered') ||
+        lowerLine.includes('completed') ||
+        // فحص احتياطي في النص الكامل
+        lowerFullText.includes('تم التوصيل') ||
+        lowerFullText.includes('توصيل ناجح');
 
       return {
         id,

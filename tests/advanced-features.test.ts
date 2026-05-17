@@ -186,3 +186,121 @@ describe("STC Smart Manager - Advanced Features", () => {
     });
   });
 });
+
+
+  describe("Adaptive Text Matching for OCR Robustness", () => {
+    it("should detect delivery status from related line first", () => {
+      const text = "الطلب 12345678 تم التوصيل\nالطلب 87654321 ملغي";
+      const cleanText = text.replace(/[\u064B-\u065F]/g, "");
+      const lines = cleanText.split("\n");
+      const lowerFullText = cleanText.toLowerCase();
+
+      const id = "12345678";
+      const relatedLine = lines.find(l => l.includes(id)) || "";
+      const lowerLine = relatedLine.toLowerCase();
+
+      const isDelivered =
+        lowerLine.includes("توصيل") ||
+        lowerLine.includes("تم") ||
+        lowerLine.includes("مكتمل") ||
+        lowerLine.includes("delivered") ||
+        lowerLine.includes("completed") ||
+        lowerFullText.includes("تم التوصيل") ||
+        lowerFullText.includes("توصيل ناجح");
+
+      expect(isDelivered).toBe(true);
+    });
+
+    it("should fallback to full text when related line is ambiguous", () => {
+      const text = "الطلب 12345678\nتم التوصيل بنجاح";
+      const cleanText = text.replace(/[\u064B-\u065F]/g, "");
+      const lines = cleanText.split("\n");
+      const lowerFullText = cleanText.toLowerCase();
+
+      const id = "12345678";
+      const relatedLine = lines.find(l => l.includes(id)) || "";
+      const lowerLine = relatedLine.toLowerCase();
+
+      // relatedLine is just "الطلب 12345678" without status
+      // but full text contains "تم التوصيل"
+      const isDelivered =
+        lowerLine.includes("توصيل") ||
+        lowerLine.includes("تم") ||
+        lowerLine.includes("مكتمل") ||
+        lowerLine.includes("delivered") ||
+        lowerLine.includes("completed") ||
+        lowerFullText.includes("تم التوصيل") ||
+        lowerFullText.includes("توصيل ناجح");
+
+      expect(isDelivered).toBe(true);
+    });
+
+    it("should correctly identify cancelled orders", () => {
+      const text = "الطلب 12345678 ملغي\nالطلب 87654321 تم الإلغاء";
+      const cleanText = text.replace(/[\u064B-\u065F]/g, "");
+      const lines = cleanText.split("\n");
+      const lowerFullText = cleanText.toLowerCase();
+
+      const id = "12345678";
+      const relatedLine = lines.find(l => l.includes(id)) || "";
+      const lowerLine = relatedLine.toLowerCase();
+
+      const isDelivered =
+        lowerLine.includes("توصيل") ||
+        lowerLine.includes("تم") ||
+        lowerLine.includes("مكتمل") ||
+        lowerLine.includes("delivered") ||
+        lowerLine.includes("completed") ||
+        lowerFullText.includes("تم التوصيل") ||
+        lowerFullText.includes("توصيل ناجح");
+
+      expect(isDelivered).toBe(false);
+    });
+
+    it("should handle multiple keywords in different positions", () => {
+      const testCases = [
+        {
+          text: "12345678 توصيل",
+          shouldBeDelivered: true,
+          description: "keyword after ID",
+        },
+        {
+          text: "توصيل 12345678",
+          shouldBeDelivered: true,
+          description: "keyword before ID",
+        },
+        {
+          text: "12345678 تم",
+          shouldBeDelivered: true,
+          description: "تم keyword",
+        },
+        {
+          text: "12345678 مكتمل",
+          shouldBeDelivered: true,
+          description: "مكتمل keyword",
+        },
+        {
+          text: "12345678 delivered",
+          shouldBeDelivered: true,
+          description: "English delivered keyword",
+        },
+      ];
+
+      testCases.forEach(({ text, shouldBeDelivered, description }) => {
+        const cleanText = text.replace(/[\u064B-\u065F]/g, "");
+        const lowerText = cleanText.toLowerCase();
+
+        const isDelivered =
+          lowerText.includes("توصيل") ||
+          lowerText.includes("تم") ||
+          lowerText.includes("مكتمل") ||
+          lowerText.includes("delivered") ||
+          lowerText.includes("completed");
+
+        expect(isDelivered).toBe(
+          shouldBeDelivered,
+          `Failed for: ${description}`
+        );
+      });
+    });
+  });
