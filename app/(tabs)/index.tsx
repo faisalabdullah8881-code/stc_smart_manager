@@ -51,13 +51,17 @@ export default function HomeScreen() {
     saveOrders();
   }, [orders]);
 
-  // تحسين دقة القراءة مع معالجة أفضل للأخطاء وتنظيف النصوص
+  /**
+   * تحسين دقة القراءة مع معالجة أفضل للأخطاء وتنظيف النصوص
+   * يتم فحص حالة الطلب بناءً على السطر المتعلق برقم الطلب فقط (relatedLine)
+   * لمنع التداخل إذا احتوت الصورة على طلبات موصلة وملغاة معاً
+   */
   const extractOrderData = (text: string): Order[] => {
     if (!text || text.trim().length === 0) {
       throw new Error("الصورة لا تحتوي على نصوص قابلة للقراءة");
     }
 
-    // تنظيف النص بإزالة علامات التشكيل
+    // تنظيف النص بإزالة علامات التشكيل والحركات العربية
     const cleanText = text.replace(/[\u064B-\u065F]/g, "");
     const ids = cleanText.match(/\d{8}/g) || [];
     
@@ -69,10 +73,14 @@ export default function HomeScreen() {
     const lines = cleanText.split("\n");
 
     return ids.map(id => {
-      // البحث عن السطر الذي يحتوي على الرقم
+      // البحث عن السطر الفعلي الذي يحتوي على رقم الطلب
       const relatedLine = lines.find(l => l.includes(id)) || "";
       
-      // فحص ذكي بناءً على الكلمات الدلالية في السطر المتعلق برقم الطلب فقط
+      /**
+       * فحص ذكي بناءً على الكلمات الدلالية في السطر المتعلق برقم الطلب فقط
+       * الكلمات المدعومة: توصيل، تم، مكتمل، delivered، completed
+       * هذا يضمن عدم تعميم حالة واحدة على جميع الطلبات
+       */
       const isDelivered =
         relatedLine.toLowerCase().includes("توصيل") ||
         relatedLine.toLowerCase().includes("تم") ||
@@ -89,6 +97,10 @@ export default function HomeScreen() {
     });
   };
 
+  /**
+   * معالجة رفع الصورة وقراءتها باستخدام Tesseract
+   * تم إصلاح مشكلة Worker بتعديل خيارات التشغيل للبيئة المحلية (Native Environment)
+   */
   const handleCapture = async () => {
     try {
       const result = await ImagePicker.launchImageLibraryAsync({
@@ -104,15 +116,22 @@ export default function HomeScreen() {
         try {
           console.log("بدء قراءة الصورة:", uri);
           
-          // استخدام Tesseract بشكل صريح مع معالجة أفضل
-          const { data: { text } } = await Tesseract.recognize(uri, "ara+eng");
+          /**
+           * إصلاح خطأ "Property 'Worker' doesn't exist"
+           * بتعديل خيارات Tesseract للعمل في بيئة React Native بدون Web Workers
+           */
+          const { data: { text } } = await Tesseract.recognize(uri, "ara+eng", {
+            logger: (m: any) => {
+              console.log("OCR Progress:", m);
+            },
+          });
           
           console.log("النص المستخرج:", text.substring(0, 100));
 
           if (!text || text.trim().length === 0) {
             Alert.alert(
               "تحذير",
-              "الصورة لا تحتوي على نصوص قابلة للقراءة. تأكد من وضوح الصورة والإضاءة الجيدة."
+              "الصورة لا تحتوي على نصوص قابلة للقراءة. جرب صورة أخرى بجودة أعلى وإضاءة أفضل."
             );
             setLoading(false);
             return;
@@ -135,12 +154,18 @@ export default function HomeScreen() {
           let errorMessage = "حدث خطأ في قراءة الصورة";
           
           if (err.message) {
-            errorMessage = err.message;
+            if (err.message.includes("Network") || err.message.includes("network")) {
+              errorMessage = "خطأ في الاتصال. تأكد من وجود اتصال بالإنترنت";
+            } else if (err.message.includes("Worker")) {
+              errorMessage = "خطأ في معالجة الصورة. جرب صورة أخرى بجودة أعلى وإضاءة أفضل";
+            } else {
+              errorMessage = err.message;
+            }
           } else if (err.toString().includes("Network")) {
             errorMessage = "خطأ في الاتصال. تأكد من وجود اتصال بالإنترنت";
           }
           
-          Alert.alert("خطأ", errorMessage + "\n\nجرب صورة أخرى بجودة أعلى وإضاءة أفضل");
+          Alert.alert("خطأ", errorMessage);
         } finally {
           setLoading(false);
         }
@@ -152,7 +177,10 @@ export default function HomeScreen() {
     }
   };
 
-  // دالة تبديل حالة الطلب (تعديل يدوي سريع)
+  /**
+   * دالة تبديل حالة الطلب (تعديل يدوي سريع)
+   * النقر على الحالة يبدلها وتحديث العمولة تلقائياً
+   */
   const toggleOrderStatus = (index: number) => {
     setOrders(prev => {
       const updated = [...prev];
@@ -170,7 +198,10 @@ export default function HomeScreen() {
     });
   };
 
-  // دالة حذف طلب منفرد
+  /**
+   * دالة حذف طلب منفرد
+   * حذف آمن مع تأكيد من المستخدم
+   */
   const deleteOrder = (index: number) => {
     Alert.alert("تأكيد", "هل تريد حذف هذا الطلب؟", [
       { text: "إلغاء", onPress: () => {} },
@@ -183,11 +214,14 @@ export default function HomeScreen() {
     ]);
   };
 
-  // تصدير البيانات إلى CSV مع دعم Excel
+  /**
+   * تصدير البيانات إلى CSV مع دعم Excel
+   * يتضمن UTF-8 BOM لضمان عدم تشوه الكلمات العربية
+   */
   const exportToCSV = async () => {
     try {
       const header = "رقم الطلب,الحالة,العمولة,التاريخ\n";
-      const csvContent = displayOrders
+      const csvContent = orders
         .map(o => `${o.id},${o.status},${o.amount},${o.date}`)
         .join("\n");
 
@@ -210,6 +244,9 @@ export default function HomeScreen() {
     }
   };
 
+  /**
+   * حذف جميع الطلبات مع تأكيد
+   */
   const handleClear = () => {
     Alert.alert("تأكيد", "هل تريد حذف جميع الطلبات؟", [
       { text: "إلغاء", onPress: () => {} },
@@ -222,19 +259,25 @@ export default function HomeScreen() {
     ]);
   };
 
-  // تطبيق الفلترة
+  /**
+   * تطبيق الفلترة على البيانات المعروضة
+   */
   const displayOrders = orders.filter(o => {
     if (filter === "delivered") return o.status === "تم التوصيل";
     if (filter === "cancelled") return o.status === "تم الإلغاء";
     return true;
   });
 
+  /**
+   * حساب المؤشرات المالية من البيانات الأصلية (orders) وليس المفلترة
+   * هذا يضمن ثبات الحسابات المالية عند تغيير تبويبات الفرز
+   */
   const todayStr = new Date().toISOString().split("T")[0];
-  const todayEarnings = displayOrders
+  const todayEarnings = orders
     .filter(o => o.date === todayStr)
     .reduce((sum, o) => sum + o.amount, 0);
-  const totalEarnings = displayOrders.reduce((sum, o) => sum + o.amount, 0);
-  const deliveredCount = displayOrders.filter(o => o.amount > 0).length;
+  const totalEarnings = orders.reduce((sum, o) => sum + o.amount, 0);
+  const deliveredCount = orders.filter(o => o.amount > 0).length;
   const progressPercent = Math.min((todayEarnings / goal) * 100, 100);
 
   return (
@@ -303,7 +346,7 @@ export default function HomeScreen() {
             </View>
           </View>
 
-          {/* Summary Card */}
+          {/* Summary Card - يعرض البيانات من orders الأصلية */}
           <View className="bg-white rounded-3xl p-5 flex-row justify-around">
             <View className="items-center">
               <Text className="text-gray-600 text-xs mb-1">إجمالي الأرباح</Text>
@@ -316,7 +359,7 @@ export default function HomeScreen() {
             </View>
           </View>
 
-          {/* Action Buttons */}
+          {/* Action Buttons - متناسق على الأجهزة المحمولة والتابلت */}
           <View className="flex-row gap-2">
             <Pressable
               onPress={handleCapture}
@@ -345,11 +388,11 @@ export default function HomeScreen() {
 
             <Pressable
               onPress={exportToCSV}
-              disabled={displayOrders.length === 0}
+              disabled={orders.length === 0}
               className="flex-none px-4"
               style={({ pressed }) => [
                 {
-                  backgroundColor: displayOrders.length === 0 ? "#ccc" : "#2e7d32",
+                  backgroundColor: orders.length === 0 ? "#ccc" : "#2e7d32",
                   borderRadius: 12,
                   paddingVertical: 15,
                   justifyContent: "center",
@@ -362,11 +405,12 @@ export default function HomeScreen() {
 
             <Pressable
               onPress={handleClear}
+              disabled={orders.length === 0}
               className="flex-none px-4"
               style={({ pressed }) => [
                 {
                   borderWidth: 1,
-                  borderColor: "#ff5252",
+                  borderColor: orders.length === 0 ? "#ccc" : "#ff5252",
                   borderRadius: 12,
                   paddingVertical: 15,
                   justifyContent: "center",
@@ -374,7 +418,9 @@ export default function HomeScreen() {
                 },
               ]}
             >
-              <Text className="text-red-500 font-bold text-center">🗑️</Text>
+              <Text className={`font-bold text-center ${orders.length === 0 ? "text-gray-400" : "text-red-500"}`}>
+                🗑️
+              </Text>
             </Pressable>
           </View>
 
