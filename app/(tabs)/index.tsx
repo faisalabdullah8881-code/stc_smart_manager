@@ -1,4 +1,4 @@
-import { ScrollView, Text, View, TouchableOpacity, Pressable, ActivityIndicator, Alert } from "react-native";
+import { ScrollView, Text, View, Pressable, Alert, ActivityIndicator } from "react-native";
 import { useState, useEffect } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as ImagePicker from "expo-image-picker";
@@ -71,12 +71,14 @@ export default function HomeScreen() {
     return ids.map(id => {
       // البحث عن السطر الذي يحتوي على الرقم
       const relatedLine = lines.find(l => l.includes(id)) || "";
-      // تحسين كشف حالة التوصيل بناءً على الكلمات المحددة
+      
+      // فحص ذكي بناءً على الكلمات الدلالية في السطر المتعلق برقم الطلب فقط
       const isDelivered =
-        cleanText.includes("توصيل") ||
-        cleanText.includes("تم التوصيل") ||
-        cleanText.includes("delivered") ||
-        cleanText.includes("تم");
+        relatedLine.toLowerCase().includes("توصيل") ||
+        relatedLine.toLowerCase().includes("تم") ||
+        relatedLine.toLowerCase().includes("مكتمل") ||
+        relatedLine.toLowerCase().includes("delivered") ||
+        relatedLine.toLowerCase().includes("completed");
 
       return {
         id,
@@ -148,6 +150,37 @@ export default function HomeScreen() {
       Alert.alert("خطأ", "حدث خطأ في اختيار الصورة");
       setLoading(false);
     }
+  };
+
+  // دالة تبديل حالة الطلب (تعديل يدوي سريع)
+  const toggleOrderStatus = (index: number) => {
+    setOrders(prev => {
+      const updated = [...prev];
+      const order = updated[index];
+      
+      if (order.status === "تم التوصيل") {
+        order.status = "تم الإلغاء";
+        order.amount = 0;
+      } else {
+        order.status = "تم التوصيل";
+        order.amount = COMMISSION;
+      }
+      
+      return updated;
+    });
+  };
+
+  // دالة حذف طلب منفرد
+  const deleteOrder = (index: number) => {
+    Alert.alert("تأكيد", "هل تريد حذف هذا الطلب؟", [
+      { text: "إلغاء", onPress: () => {} },
+      {
+        text: "حذف",
+        onPress: () => {
+          setOrders(prev => prev.filter((_, i) => i !== index));
+        },
+      },
+    ]);
   };
 
   // تصدير البيانات إلى CSV مع دعم Excel
@@ -356,27 +389,55 @@ export default function HomeScreen() {
               displayOrders
                 .slice(-10)
                 .reverse()
-                .map((order, index) => (
-                  <View
-                    key={index}
-                    className="flex-row justify-between items-center py-3 border-b border-gray-200"
-                  >
-                    <View className="flex-1">
-                      <Text className="text-foreground font-semibold">#{order.id}</Text>
-                      <Text className="text-gray-400 text-xs">{order.date}</Text>
+                .map((order, index) => {
+                  const actualIndex = orders.findIndex(o => o.id === order.id);
+                  return (
+                    <View
+                      key={index}
+                      className="flex-row justify-between items-center py-3 border-b border-gray-200"
+                    >
+                      <View className="flex-1">
+                        <Text className="text-foreground font-semibold">#{order.id}</Text>
+                        <Text className="text-gray-400 text-xs">{order.date}</Text>
+                      </View>
+                      <View className="flex-row items-center gap-2">
+                        <Pressable
+                          onPress={() => toggleOrderStatus(actualIndex)}
+                          style={({ pressed }) => [
+                            {
+                              opacity: pressed ? 0.7 : 1,
+                            },
+                          ]}
+                        >
+                          <View className="items-end">
+                            <Text
+                              className={`font-semibold px-3 py-1 rounded-lg ${
+                                order.amount > 0 
+                                  ? "text-green-600 bg-green-50" 
+                                  : "text-red-600 bg-red-50"
+                              }`}
+                            >
+                              {order.status}
+                            </Text>
+                            <Text className="text-gray-600 text-xs mt-1">{order.amount} ر.س</Text>
+                          </View>
+                        </Pressable>
+                        
+                        <Pressable
+                          onPress={() => deleteOrder(actualIndex)}
+                          style={({ pressed }) => [
+                            {
+                              opacity: pressed ? 0.6 : 0.8,
+                              paddingLeft: 8,
+                            },
+                          ]}
+                        >
+                          <Text className="text-lg">🗑️</Text>
+                        </Pressable>
+                      </View>
                     </View>
-                    <View className="items-end">
-                      <Text
-                        className={`font-semibold ${
-                          order.amount > 0 ? "text-green-600" : "text-red-600"
-                        }`}
-                      >
-                        {order.status}
-                      </Text>
-                      <Text className="text-gray-600 text-xs">{order.amount} ر.س</Text>
-                    </View>
-                  </View>
-                ))
+                  );
+                })
             )}
           </View>
         </View>
