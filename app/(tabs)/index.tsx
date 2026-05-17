@@ -34,8 +34,6 @@ export default function HomeScreen() {
   const [goal] = useState(500);
   const COMMISSION = 28;
   const webViewRef = useRef<WebView>(null);
-  const [pendingBase64, setPendingBase64] = useState<string | null>(null);
-  const [ocrComplete, setOcrComplete] = useState(false);
 
   // Load orders from AsyncStorage on mount
   useEffect(() => {
@@ -66,8 +64,7 @@ export default function HomeScreen() {
 
   /**
    * استخراج بيانات الطلبات من النص المستخرج من الصورة
-   * مع فحص ذكي وتكيفي لحالة كل طلب بناءً على السطر المتعلق به أولاً،
-   * ثم الرجوع للنص الكامل كخطة احتياطية إذا كان السطر غامضاً
+   * مع فحص ذكي وتكيفي لحالة كل طلب
    */
   const extractOrderData = (text: string): Order[] => {
     // التحقق من أن النص يحتوي على محتوى
@@ -97,23 +94,31 @@ export default function HomeScreen() {
 
       /**
        * فحص ذكي وتكيفي بناءً على الكلمات الدلالية:
-       * 1. أولاً: فحص السطر المتعلق برقم الطلب (relatedLine)
-       * 2. احتياطياً: فحص النص الكامل (cleanText) إذا كان السطر غامضاً
-       * 
-       * الكلمات المدعومة:
-       * - العربية: توصيل، تم، مكتمل، تم التوصيل، توصيل ناجح
-       * - الإنجليزية: delivered، completed
+       * 1. فحص السطر المتعلق برقم الطلب (relatedLine) أولاً
+       * 2. فحص احتياطي في النص الكامل (fullText) إذا كان السطر غامضاً
+       * 3. التأكد من عدم وجود كلمات الإلغاء الصريحة
        */
-      const isDelivered =
-        // فحص السطر المتعلق برقم الطلب
+      const hasDeliveryKeywords =
         lowerLine.includes('توصيل') ||
         lowerLine.includes('تم') ||
         lowerLine.includes('مكتمل') ||
         lowerLine.includes('delivered') ||
-        lowerLine.includes('completed') ||
-        // فحص احتياطي في النص الكامل
+        lowerLine.includes('completed');
+
+      const hasCancelKeywords =
+        lowerLine.includes('ملغي') ||
+        lowerLine.includes('إلغاء') ||
+        lowerLine.includes('cancelled') ||
+        lowerLine.includes('cancel');
+
+      const hasFullTextDeliveryPhrases =
         lowerFullText.includes('تم التوصيل') ||
         lowerFullText.includes('توصيل ناجح');
+
+      // القرار النهائي: إذا كان هناك كلمات توصيل أو عبارات توصيل في النص الكامل
+      // وليس هناك كلمات إلغاء صريحة، فهو موصل
+      const isDelivered =
+        (hasDeliveryKeywords || hasFullTextDeliveryPhrases) && !hasCancelKeywords;
 
       return {
         id,
@@ -183,8 +188,6 @@ export default function HomeScreen() {
 
       if (!result.canceled && result.assets[0].base64) {
         setLoading(true);
-        setPendingBase64(result.assets[0].base64);
-        setOcrComplete(false);
 
         // تأخير صغير للسماح لـ WebView بمعالجة الصورة
         setTimeout(() => {
@@ -278,7 +281,7 @@ export default function HomeScreen() {
     ]);
   };
 
-  // حساب الإحصائيات من مصفوفة البيانات الأصلية
+  // حساب الإحصائيات من مصفوفة البيانات الأصلية (ليس من displayOrders)
   const todayEarnings = orders
     .filter((o) => o.date === new Date().toISOString().split('T')[0])
     .reduce((sum, o) => sum + o.amount, 0);
@@ -303,46 +306,78 @@ export default function HomeScreen() {
     <html>
     <head>
       <meta charset="UTF-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1.0">
       <script src="https://cdn.jsdelivr.net/npm/tesseract.js@v5.0.3/dist/tesseract.min.js"></script>
       <style>
-        body { margin: 0; padding: 0; }
+        body { margin: 0; padding: 0; background: transparent; }
+        html { margin: 0; padding: 0; }
       </style>
     </head>
     <body>
       <script>
         let worker = null;
+        let isProcessing = false;
 
         async function initWorker() {
           if (!worker) {
-            worker = await Tesseract.createWorker(['ara', 'eng']);
+            try {
+              worker = await Tesseract.createWorker(['ara', 'eng']);
+              console.log('Worker initialized successfully');
+            } catch (error) {
+              console.error('Failed to initialize worker:', error);
+              throw error;
+            }
           }
           return worker;
         }
 
         window.processImage = async function(base64Data) {
+          if (isProcessing) {
+            console.warn('Already processing an image');
+            return;
+          }
+
+          isProcessing = true;
           try {
+            console.log('Starting OCR processing...');
             const w = await initWorker();
+            
             const result = await w.recognize(base64Data);
             const text = result.data.text;
+            
+            console.log('OCR completed successfully');
             
             window.ReactNativeWebView.postMessage(JSON.stringify({
               type: 'success',
               data: text
             }));
           } catch (error) {
+            console.error('OCR error:', error);
             window.ReactNativeWebView.postMessage(JSON.stringify({
               type: 'error',
               error: error.message || 'خطأ في معالجة الصورة'
             }));
+          } finally {
+            isProcessing = false;
           }
         };
 
         window.terminateWorker = async function() {
           if (worker) {
-            await worker.terminate();
-            worker = null;
+            try {
+              await worker.terminate();
+              worker = null;
+              console.log('Worker terminated');
+            } catch (error) {
+              console.error('Error terminating worker:', error);
+            }
           }
         };
+
+        // Signal that the page is ready
+        window.ReactNativeWebView.postMessage(JSON.stringify({
+          type: 'ready'
+        }));
       </script>
     </body>
     </html>
@@ -360,6 +395,9 @@ export default function HomeScreen() {
             javaScriptEnabled={true}
             scalesPageToFit={false}
             style={{ width: 0, height: 0 }}
+            startInLoadingState={false}
+            originWhitelist={['*']}
+            mixedContentMode="always"
           />
         </View>
       )}

@@ -3,73 +3,106 @@ import { View } from 'react-native';
 import { WebView } from 'react-native-webview';
 
 interface OCRWebViewProps {
-  onTextExtracted: (text: string) => void;
-  onError: (error: string) => void;
+  onOCRComplete: (text: string) => void;
+  onOCRError: (error: string) => void;
 }
 
 export const OCRWebView = React.forwardRef<WebView, OCRWebViewProps>(
-  ({ onTextExtracted, onError }, ref) => {
-    const webViewRef = useRef<WebView>(null);
-
+  ({ onOCRComplete, onOCRError }, ref) => {
     const handleMessage = useCallback((event: any) => {
       try {
-        const { type, data, error } = JSON.parse(event.nativeEvent.data);
+        const message = JSON.parse(event.nativeEvent.data);
         
-        if (type === 'success') {
-          onTextExtracted(data);
-        } else if (type === 'error') {
-          onError(error || 'حدث خطأ في معالجة الصورة');
+        if (message.type === 'success') {
+          onOCRComplete(message.data);
+        } else if (message.type === 'error') {
+          onOCRError(message.error || 'خطأ في معالجة الصورة');
+        } else if (message.type === 'ready') {
+          console.log('OCR WebView is ready');
         }
       } catch (err) {
-        onError('خطأ في معالجة الرد من WebView');
+        console.error('Error parsing WebView message:', err);
+        onOCRError('خطأ في معالجة النتيجة');
       }
-    }, [onTextExtracted, onError]);
+    }, [onOCRComplete, onOCRError]);
 
     const htmlContent = `
       <!DOCTYPE html>
       <html>
       <head>
         <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <script src="https://cdn.jsdelivr.net/npm/tesseract.js@v5.0.3/dist/tesseract.min.js"></script>
         <style>
-          body { margin: 0; padding: 0; }
+          body { margin: 0; padding: 0; background: transparent; }
+          html { margin: 0; padding: 0; }
         </style>
       </head>
       <body>
         <script>
           let worker = null;
+          let isProcessing = false;
 
           async function initWorker() {
             if (!worker) {
-              worker = await Tesseract.createWorker(['ara', 'eng']);
+              try {
+                worker = await Tesseract.createWorker(['ara', 'eng']);
+                console.log('Worker initialized successfully');
+              } catch (error) {
+                console.error('Failed to initialize worker:', error);
+                throw error;
+              }
             }
             return worker;
           }
 
           window.processImage = async function(base64Data) {
+            if (isProcessing) {
+              console.warn('Already processing an image');
+              return;
+            }
+
+            isProcessing = true;
             try {
+              console.log('Starting OCR processing...');
               const w = await initWorker();
+              
               const result = await w.recognize(base64Data);
               const text = result.data.text;
+              
+              console.log('OCR completed successfully');
               
               window.ReactNativeWebView.postMessage(JSON.stringify({
                 type: 'success',
                 data: text
               }));
             } catch (error) {
+              console.error('OCR error:', error);
               window.ReactNativeWebView.postMessage(JSON.stringify({
                 type: 'error',
                 error: error.message || 'خطأ في معالجة الصورة'
               }));
+            } finally {
+              isProcessing = false;
             }
           };
 
           window.terminateWorker = async function() {
             if (worker) {
-              await worker.terminate();
-              worker = null;
+              try {
+                await worker.terminate();
+                worker = null;
+                console.log('Worker terminated');
+              } catch (error) {
+                console.error('Error terminating worker:', error);
+              }
             }
           };
+
+          // Signal that the page is ready
+          window.ReactNativeWebView.postMessage(JSON.stringify({
+            type: 'ready'
+          }));
         </script>
       </body>
       </html>
@@ -78,12 +111,15 @@ export const OCRWebView = React.forwardRef<WebView, OCRWebViewProps>(
     return (
       <View style={{ width: 0, height: 0, display: 'none' }}>
         <WebView
-          ref={webViewRef}
+          ref={ref}
           source={{ html: htmlContent }}
           onMessage={handleMessage}
-          style={{ width: 0, height: 0 }}
           javaScriptEnabled={true}
           scalesPageToFit={false}
+          style={{ width: 0, height: 0 }}
+          startInLoadingState={false}
+          originWhitelist={['*']}
+          mixedContentMode="always"
         />
       </View>
     );
